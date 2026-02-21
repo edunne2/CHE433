@@ -1,98 +1,75 @@
-# bank/core/__init__.py
-"""Core utilities for all chemical engineering calculations"""
+"""Liquid-Liquid Extraction calculations - Chapter 27 equations"""
 
-from .validation import (
-    check_positive,
-    check_non_negative,
-    check_in_closed_01,
-    check_in_open_01,
-    normalize_composition,
-    check_composition_match,
-    ChemEngError,
-    InputError,
-    ConvergenceError,
-    PhaseError,
+from .equilibrium import (
+    PhaseEquilibrium,
+    TriangularDiagram,
+    RectangularDiagram,
+    tie_line_compositions,
 )
 
-from .numerical import (
-    bisection,
-    newton_raphson,
-    integrate_trapezoid,
-    integrate_adaptive,
-    linear_interpolate,
-    log_interpolate,
+from .single_stage import (
+    SingleStageExtractor,
+    SingleStageSpec,
+    lever_arm_rule,
 )
 
-from .conversions import (
-    # Pressure
-    atm_to_kPa, kPa_to_atm, psi_to_kPa, kPa_to_psi, psi_to_atm, atm_to_psi,
-    bar_to_kPa, kPa_to_bar, mmHg_to_kPa, kPa_to_mmHg,
-    # Temperature
-    C_to_K, K_to_C, F_to_C, C_to_F, F_to_K, K_to_F, R_to_K, K_to_R,
-    # Mass and Length
-    lb_to_kg, kg_to_lb, g_to_kg, kg_to_g, ft_to_m, m_to_ft, in_to_m, m_to_in, cm_to_m, m_to_cm,
-    # Volume and Flow
-    L_to_m3, m3_to_L, gal_to_m3, m3_to_gal, ft3_to_m3, m3_to_ft3, gpm_to_m3s, m3s_to_gpm,
-    # Viscosity
-    cP_to_Pa_s, Pa_s_to_cP, cP_to_lb_ft_hr, lb_ft_hr_to_cP,
-    # Energy and Power
-    cal_to_J, J_to_cal, BTU_to_J, J_to_BTU, kW_to_HP, HP_to_kW,
+from .equipment import (
+    MixerSettler,
+    SprayTower,
+    PackedTower,
+    SieveTrayTower,
+    PulsedTower,
+    ScheibelTower,
+    KarrTower,
+    tray_efficiency_perforated,
 )
 
-from .properties import (
-    # Water
-    water_density, water_viscosity, water_heat_capacity, water_vapor_pressure,
-    # Air
-    air_density, air_viscosity, air_thermal_conductivity,
-    # Ideal Gas
-    ideal_gas_density, ideal_gas_viscosity,
-    # Mixtures
-    mixture_density, mixture_viscosity, surface_tension_water,
+from .flooding import (
+    flooding_velocity_packed,
+    PackedFloodingSpec,
 )
 
-from .base import (
-    SolverBase,
-    SpecificationBase,
-    ChemEngError as BaseChemEngError,
+from .scale_up import (
+    scheibel_scale_up,
+    karr_scale_up,
+)
+
+from .utils import (
+    dyn_per_cm_to_lbm_per_h2,
+    cp_to_lbm_per_ft_hr,
 )
 
 __all__ = [
-    # Validation
-    'check_positive', 'check_non_negative', 'check_in_closed_01', 'check_in_open_01',
-    'normalize_composition', 'check_composition_match',
-    'ChemEngError', 'InputError', 'ConvergenceError', 'PhaseError',
+    # Equilibrium
+    'PhaseEquilibrium',
+    'TriangularDiagram',
+    'RectangularDiagram',
+    'tie_line_compositions',
     
-    # Numerical
-    'bisection', 'newton_raphson', 'integrate_trapezoid', 'integrate_adaptive',
-    'linear_interpolate', 'log_interpolate',
+    # Single Stage
+    'SingleStageExtractor',
+    'SingleStageSpec',
+    'lever_arm_rule',
     
-    # Conversions - Pressure
-    'atm_to_kPa', 'kPa_to_atm', 'psi_to_kPa', 'kPa_to_psi', 'psi_to_atm', 'atm_to_psi',
-    'bar_to_kPa', 'kPa_to_bar', 'mmHg_to_kPa', 'kPa_to_mmHg',
+    # Equipment
+    'MixerSettler',
+    'SprayTower',
+    'PackedTower',
+    'SieveTrayTower',
+    'PulsedTower',
+    'ScheibelTower',
+    'KarrTower',
+    'tray_efficiency_perforated',
     
-    # Conversions - Temperature
-    'C_to_K', 'K_to_C', 'F_to_C', 'C_to_F', 'F_to_K', 'K_to_F', 'R_to_K', 'K_to_R',
+    # Flooding
+    'flooding_velocity_packed',
+    'PackedFloodingSpec',
     
-    # Conversions - Mass and Length
-    'lb_to_kg', 'kg_to_lb', 'g_to_kg', 'kg_to_g', 'ft_to_m', 'm_to_ft', 
-    'in_to_m', 'm_to_in', 'cm_to_m', 'm_to_cm',
+    # Scale-up
+    'scheibel_scale_up',
+    'karr_scale_up',
     
-    # Conversions - Volume and Flow
-    'L_to_m3', 'm3_to_L', 'gal_to_m3', 'm3_to_gal', 'ft3_to_m3', 'm3_to_ft3',
-    'gpm_to_m3s', 'm3s_to_gpm',
-    
-    # Conversions - Viscosity
-    'cP_to_Pa_s', 'Pa_s_to_cP', 'cP_to_lb_ft_hr', 'lb_ft_hr_to_cP',
-    
-    # Conversions - Energy and Power
-    'cal_to_J', 'J_to_cal', 'BTU_to_J', 'J_to_BTU', 'kW_to_HP', 'HP_to_kW',
-    
-    # Properties
-    'water_density', 'water_viscosity', 'water_heat_capacity', 'water_vapor_pressure',
-    'air_density', 'air_viscosity', 'air_thermal_conductivity',
-    'ideal_gas_density', 'ideal_gas_viscosity',
-    'mixture_density', 'mixture_viscosity', 'surface_tension_water',
-    
-    # Base Classes
-    'SolverBase', 'SpecificationBase',
+    # Utilities
+    'dyn_per_cm_to_lbm_per_h2',
+    'cp_to_lbm_per_ft_hr',
 ]

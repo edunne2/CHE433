@@ -1,166 +1,199 @@
-"""Single-stage equilibrium contact - Eqs. 22.1-4 to 22.1-9"""
+"""Single-stage equilibrium extraction - Eqs. 27.2-1 to 27.2-11"""
 
 from dataclasses import dataclass
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
+import math
 
 from bank.core.validation import (
     check_positive, check_in_closed_01, ChemEngError, InputError
 )
-from bank.core.numerical import bisection
-from bank.separations.equilibrium import EquilibriumModel
+from .equilibrium import PhaseEquilibrium
+
+
+def lever_arm_rule(
+    L: float,
+    V: float,
+    M: float,
+    dist_LM: float,
+    dist_VM: float,
+    dist_LV: float,
+    mode: str = "L_from_VM_LM"
+) -> float:
+    """
+    Lever-arm rule - Eqs. 27.2-7 and 27.2-8
+    
+    L/V = length_VM / length_LM                              (27.2-7)
+    L/M = length_VM / length_LV                              (27.2-8)
+    
+    Args:
+        L: Mass of L phase (kg)
+        V: Mass of V phase (kg)
+        M: Total mass (kg)
+        dist_LM: Distance between points L and M
+        dist_VM: Distance between points V and M
+        dist_LV: Distance between points L and V
+        mode: Which ratio to calculate:
+            - "L_from_VM_LM": L/V = VM/LM
+            - "L_from_VM_LV": L/M = VM/LV
+            - "V_from_LM_LV": V/M = LM/LV
+    
+    Returns:
+        Calculated ratio or mass
+    """
+    if mode == "L_from_VM_LM":
+        return V * (dist_VM / dist_LM)
+    elif mode == "L_from_VM_LV":
+        return M * (dist_VM / dist_LV)
+    elif mode == "V_from_LM_LV":
+        return M * (dist_LM / dist_LV)
+    else:
+        raise ValueError(f"Unknown mode: {mode}")
 
 
 @dataclass
 class SingleStageSpec:
-    """Specification for single-stage equilibrium contact - Eqs. 22.1-4 to 22.1-6"""
-    L_in: float
-    G_in: float
-    x_in: float
-    y_in: float
-    eq: EquilibriumModel
-    x_out: Optional[float] = None
-    y_out: Optional[float] = None
-    mode: str = "absorption"
-    tol: float = 1e-12
-    maxiter: int = 400
+    """Specification for single-stage equilibrium extraction"""
+    L0: float           # Raffinate phase inlet (kg)
+    xA0: float          # Raffinate phase A composition
+    xC0: float          # Raffinate phase C composition
+    V2: float           # Extract phase inlet (kg)
+    yA2: float          # Extract phase A composition
+    yC2: float          # Extract phase C composition
+    eq: PhaseEquilibrium  # Equilibrium data
     
-    def __post_init__(self):
-        check_positive("L_in", self.L_in)
-        check_positive("G_in", self.G_in)
-        check_in_closed_01("x_in", self.x_in)
-        check_in_closed_01("y_in", self.y_in)
-        
-        if self.mode not in ["absorption", "stripping"]:
-            raise InputError(f"Mode must be 'absorption' or 'stripping'")
+    @property
+    def xB0(self) -> float:
+        return 1.0 - self.xA0 - self.xC0
+    
+    @property
+    def yB2(self) -> float:
+        return 1.0 - self.yA2 - self.yC2
 
 
-class SingleStageAbsorber:
-    """Solver for single-stage equilibrium contact - Eqs. 22.1-4 to 22.1-9"""
+class SingleStageExtractor:
+    """
+    Single-stage equilibrium extraction solver.
+    
+    Implements Eqs. 27.2-1 to 27.2-11.
+    """
     
     def __init__(self, spec: SingleStageSpec):
         self.spec = spec
         self._validate()
+        self._calculate_M()
     
     def _validate(self):
-        n_specified = sum([
-            self.spec.x_out is not None,
-            self.spec.y_out is not None
-        ])
+        """Validate inputs"""
+        check_positive("L0", self.spec.L0)
+        check_positive("V2", self.spec.V2)
+        check_in_closed_01("xA0", self.spec.xA0)
+        check_in_closed_01("xC0", self.spec.xC0)
+        check_in_closed_01("yA2", self.spec.yA2)
+        check_in_closed_01("yC2", self.spec.yC2)
         
-        if n_specified == 2:
-            self._verify_mass_balance()
+        # Validate composition sums
+        if abs(self.spec.xA0 + self.spec.xC0 + self.spec.xB0 - 1.0) > 1e-10:
+            raise InputError(f"Raffinate inlet composition does not sum to 1: "
+                           f"{self.spec.xA0:.4f} + {self.spec.xC0:.4f} + {self.spec.xB0:.4f} = "
+                           f"{self.spec.xA0 + self.spec.xC0 + self.spec.xB0:.4f}")
+        
+        if abs(self.spec.yA2 + self.spec.yC2 + self.spec.yB2 - 1.0) > 1e-10:
+            raise InputError(f"Extract inlet composition does not sum to 1")
     
-    def _verify_mass_balance(self):
-        """Verify mass balance using Eq. 22.1-7"""
-        if self.spec.x_out is None or self.spec.y_out is None:
-            return
+    def _calculate_M(self):
+        """Calculate mixture M composition - Eqs. 27.2-9 to 27.2-11"""
+        self.M = self.spec.L0 + self.spec.V2
         
-        L = self.spec.L_in
-        G = self.spec.G_in
-        x_in = self.spec.x_in
-        y_in = self.spec.y_in
-        x_out = self.spec.x_out
-        y_out = self.spec.y_out
+        # Component A balance - Eq. 27.2-10
+        self.x_AM = (self.spec.L0 * self.spec.xA0 + self.spec.V2 * self.spec.yA2) / self.M
         
-        L_prime = L * (1 - x_in)
-        V_prime = G * (1 - y_in)
+        # Component C balance - Eq. 27.2-11
+        self.x_CM = (self.spec.L0 * self.spec.xC0 + self.spec.V2 * self.spec.yC2) / self.M
         
-        lhs = L_prime * (x_in/(1-x_in)) + V_prime * (y_in/(1-y_in))
-        rhs = L_prime * (x_out/(1-x_out)) + V_prime * (y_out/(1-y_out))
-        
-        if abs(lhs - rhs) > 1e-6 * max(lhs, rhs, 1.0):
-            raise ChemEngError(f"Mass balance failed: {lhs} vs {rhs}")
+        # Component B by difference
+        self.x_BM = 1.0 - self.x_AM - self.x_CM
     
-    def _equilibrium_relation(self, x: float) -> float:
-        """Equilibrium: y = f(x) (Eq. 22.1-8)"""
-        return self.spec.eq.y_of_x(x)
-    
-    def _operating_line(self, x: float) -> float:
+    def find_equilibrium_phases(self) -> Tuple[Dict[str, float], Dict[str, float]]:
         """
-        Operating line from mass balance (Eq. 22.1-7 rearranged)
-        y = y_in + (L/G)(x_in - x) for constant flows
-        """
-        L = self.spec.L_in
-        G = self.spec.G_in
-        return self.spec.y_in + (L / G) * (self.spec.x_in - x)
-    
-    def _stage_residual(self, x: float) -> float:
-        """Residual: y_eq(x) - y_op(x) = 0 at equilibrium"""
-        y_eq = self._equilibrium_relation(x)
-        y_op = self._operating_line(x)
-        return y_eq - y_op
-    
-    def solve_outlets(self) -> Dict[str, Any]:
-        """Solve for outlet compositions using Eq. 22.1-7"""
+        Find equilibrium phases L1 and V1 using tie lines.
         
-        if self.spec.mode == "absorption":
-            x_low = self.spec.x_in
-            x_high = 1.0
+        Returns:
+            (raffinate_composition, extract_composition)
+        """
+        return self.spec.eq.find_tie_line_through_M(self.x_AM, self.x_CM)
+    
+    def solve_mass_balance(
+        self,
+        raffinate: Dict[str, float],
+        extract: Dict[str, float]
+    ) -> Dict[str, Any]:
+        """
+        Solve for L1 and V1 masses using mass balance.
+        
+        Args:
+            raffinate: Composition of raffinate phase L1
+            extract: Composition of extract phase V1
+        
+        Returns:
+            Dictionary with L1, V1, and verification
+        """
+        # Solve using component A balance - Eq. 27.2-10
+        # L1 * xA1 + V1 * yA1 = M * x_AM
+        # with L1 + V1 = M
+        
+        denom = raffinate['x_A'] - extract['y_A']
+        if abs(denom) < 1e-12:
+            # Try using component C instead
+            denom = raffinate['x_C'] - extract['y_C']
+            if abs(denom) < 1e-12:
+                raise ChemEngError("Cannot solve mass balance - compositions too close")
+            
+            L1 = self.M * (self.x_CM - extract['y_C']) / denom
         else:
-            x_low = 0.0
-            x_high = self.spec.x_in
+            L1 = self.M * (self.x_AM - extract['y_A']) / denom
         
-        try:
-            x_out = bisection(
-                self._stage_residual, x_low, x_high,
-                tol=self.spec.tol, maxiter=self.spec.maxiter,
-                expand_bracket=True
-            )
-        except Exception as e:
-            x_out = bisection(
-                self._stage_residual, 0.0, 1.0,
-                tol=self.spec.tol, maxiter=self.spec.maxiter,
-                expand_bracket=True, expand_factor=1.5
-            )
+        V1 = self.M - L1
         
-        y_out = self._equilibrium_relation(x_out)
+        # Verify with component C balance
+        check_C = abs(L1 * raffinate['x_C'] + V1 * extract['y_C'] - self.M * self.x_CM)
         
         return {
-            "outlets": {"x_out": x_out, "y_out": y_out},
-            "flows": {"L_out": self.spec.L_in, "G_out": self.spec.G_in},
+            "L1": L1,
+            "V1": V1,
+            "raffinate": raffinate,
+            "extract": extract,
+            "verification": {
+                "A_balance": abs(L1 * raffinate['x_A'] + V1 * extract['y_A'] - self.M * self.x_AM),
+                "C_balance": check_C,
+                "total_balance": abs(L1 + V1 - self.M),
+            }
         }
     
-    def solve_LG_ratio(self, target_x_out: float) -> float:
-        """Solve for L/G ratio required to achieve target liquid outlet"""
-        check_in_closed_01("target_x_out", target_x_out)
-        
-        original_L = self.spec.L_in
-        original_G = self.spec.G_in
-        
-        def residual(LG_ratio: float):
-            self.spec.L_in = LG_ratio * original_G
-            result = self._stage_residual(target_x_out)
-            self.spec.L_in = original_L
-            return result
-        
-        LG_ratio = bisection(residual, 0.01, 100.0, tol=self.spec.tol, expand_bracket=True)
-        return LG_ratio
-    
     def solve(self) -> Dict[str, Any]:
-        """Main solving method"""
-        if self.spec.x_out is not None and self.spec.y_out is not None:
-            self._verify_mass_balance()
-            result = {
-                "outlets": {"x_out": self.spec.x_out, "y_out": self.spec.y_out},
-                "flows": {"L_out": self.spec.L_in, "G_out": self.spec.G_in},
-            }
-        else:
-            result = self.solve_outlets()
+        """Complete single-stage extraction solution"""
+        # Find equilibrium phases
+        raffinate, extract = self.find_equilibrium_phases()
         
-        x_out = result["outlets"]["x_out"]
-        y_out = result["outlets"]["y_out"]
+        # Solve mass balance
+        result = self.solve_mass_balance(raffinate, extract)
         
-        if self.spec.mode == "absorption":
-            recovery = (self.spec.y_in - y_out) / self.spec.y_in if self.spec.y_in > 0 else 0
-        else:
-            recovery = (self.spec.x_in - x_out) / self.spec.x_in if self.spec.x_in > 0 else 0
+        # Calculate L/V ratio using lever-arm rule (approximate)
+        # This would require distances on the actual plot
         
         return {
-            "specification": {
-                "L_in": self.spec.L_in, "G_in": self.spec.G_in,
-                "x_in": self.spec.x_in, "y_in": self.spec.y_in,
-                "mode": self.spec.mode,
+            "inputs": {
+                "L0": self.spec.L0,
+                "V2": self.spec.V2,
+                "xA0": self.spec.xA0,
+                "xC0": self.spec.xC0,
+                "yA2": self.spec.yA2,
+                "yC2": self.spec.yC2,
+            },
+            "mixture": {
+                "M": self.M,
+                "x_AM": self.x_AM,
+                "x_CM": self.x_CM,
+                "x_BM": self.x_BM,
             },
             "results": result,
-            "performance": {"recovery": recovery},
         }
